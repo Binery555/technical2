@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8">
+  <title>Untitled</title>
+  
+
+</head>
+<body>
+<!-- partial:index.partial.html -->
+Put your HTML text here<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Auto Analyzer — Arrows + TP/SL (Binance Live)</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root{
+      --bg:#0b0f14; --panel:#0f1722; --line:#1f2a37; --ink:#e8eef7;
+      --accent:#fcd535; --good:#22c55e; --bad:#ef4444; --muted:#9ab0c9;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
+    .top{
+      display:flex;gap:10px;align-items:center;padding:10px 12px;background:#0c121a;
+      border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;flex-wrap:wrap
+    }
+    .brand{font-weight:700;letter-spacing:.3px}
+    .ctl{display:flex;gap:6px;align-items:center}
+    input,select,button{
+      background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:10px;
+      padding:8px 10px;outline:none;min-height:36px
+    }
+    button{cursor:pointer}
+    .dot{width:10px;height:10px;border-radius:50%}
+    .dot.ok{background:var(--good)} .dot.bad{background:var(--bad)} .dot.idle{background:#666}
+    .wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px;height:calc(100% - 62px)}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+    #chart{height:100%}
+    .side{display:flex;flex-direction:column;gap:12px}
+    .panel{padding:12px}
+    .h{font-weight:700;color:var(--accent);margin-bottom:8px}
+    .log{height:260px;overflow:auto;border-top:1px dashed var(--line);padding-top:8px;font-size:12px}
+    .row{display:flex;justify-content:space-between;gap:8px;margin:6px 0}
+    .pill{padding:2px 8px;border-radius:999px;border:1px solid var(--line);font-size:12px;color:var(--muted)}
+    .pill.good{color:var(--good);border-color:var(--good)}
+    .pill.bad{color:var(--bad);border-color:var(--bad)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .foot{font-size:11px;color:#96a1b3;padding:8px 12px;border-top:1px solid var(--line)}
+    .small{font-size:12px;color:var(--muted)}
+    .tight *{margin:0}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">Auto Analyzer — <span class="small">Arrows + TP/SL</span></div>
+
+    <div class="ctl">
+      <input id="symbolInput" list="usdtList" placeholder="Symbol (e.g., BTCUSDT)" style="min-width:180px"/>
+      <datalist id="usdtList"></datalist>
+      <select id="interval">
+        <option value="1m">1m</option><option value="5m">5m</option>
+        <option value="15m">15m</option><option value="1h">1h</option>
+      </select>
+      <button id="load">Load</button>
+    </div>
+
+    <div class="ctl">
+      <label class="small">ATR SL<span style="opacity:.6">×</span></label>
+      <input id="atrSL" type="number" step="0.1" value="1.5" style="width:72px">
+      <label class="small">ATR TP<span style="opacity:.6">×</span></label>
+      <input id="atrTP" type="number" step="0.1" value="2.0" style="width:72px">
+      <label class="small">Min Confluence</label>
+      <select id="minConf"><option>2</option><option selected>3</option></select>
+    </div>
+
+    <div class="ctl">
+      <label class="small">One trade at a time</label>
+      <input id="oneAtATime" type="checkbox" checked>
+    </div>
+
+    <button id="reset">Clear Arrows/Lines</button>
+    <button id="closeIdea">Close Idea</button>
+
+    <div style="flex:1"></div>
+    <div class="pill" id="hint">Waiting…</div>
+    <div class="dot idle" id="wsdot" title="WebSocket status"></div>
+  </div>
+
+  <div class="wrap">
+    <div class="card" style="display:flex;flex-direction:column">
+      <div id="chart"></div>
+      <div class="foot">
+        Arrows at candle close → **next-bar entry**:
+        <span class="pill good">Green ↑ Long</span> /
+        <span class="pill bad">Red ↓ Short</span>.
+        TP/SL based on ATR(14). SL trails on each bar close.
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="card panel">
+        <div class="h">Signal Settings</div>
+        <div class="grid">
+          <div class="tight"><div class="small">SMA Fast / Slow</div><div>20 / 50</div></div>
+          <div class="tight"><div class="small">RSI Period</div><div>14</div></div>
+          <div class="tight"><div class="small">MACD</div><div>12 / 26 / 9</div></div>
+          <div class="tight"><div class="small">Min Confluence</div><div id="minConfLbl">3 / 3</div></div>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <div class="h">Last Signal</div>
+        <div id="lastSig">—</div>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------- Math helpers -----------------------
+    const SMA = (arr, p) => arr.map((_, i) => i+1>=p
+      ? arr.slice(i+1-p, i+1).reduce((a,b)=>a+b,0)/p
+      : undefined);
+
+    const EMA = (arr, p) => {
+      const k = 2/(p+1);
+      const out = new Array(arr.length).fill(undefined);
+      let ema;
+      for (let i=0;i<arr.length;i++){
+        const v = arr[i];
+        if (v==null) { out[i]=undefined; continue; }
+        if (ema==null){ ema = v; }
+        else { ema = v*k + ema*(1-k); }
+        out[i]=ema;
+      }
+      return out;
+    };
+
+    function RSI(closes, period=14){
+      const out = new Array(closes.length).fill(undefined);
+      let gain=0, loss=0, avgGain, avgLoss;
+      for (let i=1;i<closes.length;i++){
+        const change = closes[i]-closes[i-1];
+        const g = Math.max(change,0), l = Math.max(-change,0);
+        if (i <= period){ gain += g; loss += l; if (i===period){ avgGain=gain/period; avgLoss=loss/period; out[i]= 100 - (100/(1+(avgGain/(avgLoss||1e-9)))); } }
+        else {
+          avgGain = (avgGain*(period-1)+g)/period;
+          avgLoss = (avgLoss*(period-1)+l)/period;
+          const rs = avgGain/(avgLoss||1e-9);
+          out[i] = 100 - 100/(1+rs);
+        }
+      }
+      return out;
+    }
+
+    function MACD(closes, fast=12, slow=26, signal=9){
+      const emaFast = EMA(closes, fast);
+      const emaSlow = EMA(closes, slow);
+      const macd = closes.map((_,i)=>{
+        if (emaFast[i]==null || emaSlow[i]==null) return undefined;
+        return emaFast[i]-emaSlow[i];
+      });
+      const sig = EMA(macd.map(v=>v), signal);
+      const hist = macd.map((v,i)=> (v==null||sig[i]==null)?undefined:(v - sig[i]));
+      return { macd, signal: sig, hist };
+    }
+
+    // Wilder's ATR
+    function ATR(highs, lows, closes, period=14){
+      const tr = new Array(closes.length).fill(undefined);
+      for (let i=0;i<closes.length;i++){
+        if (i===0) tr[i] = highs[i]-lows[i];
+        else tr[i] = Math.max(
+          highs[i]-lows[i],
+          Math.abs(highs[i]-closes[i-1]),
+          Math.abs(lows[i]-closes[i-1])
+        );
+      }
+      const out = new Array(closes.length).fill(undefined);
+      let sum = 0;
+      for (let i=0;i<tr.length;i++){
+        const v = tr[i];
+        if (i < period) sum += v;
+        if (i === period-1) out[i] = sum/period;
+        else if (i >= period) out[i] = (out[i-1]*(period-1) + v)/period;
+      }
+      return out;
+    }
+
+    // ----------------------- Chart -----------------------
+    const chartEl = document.getElementById('chart');
+    const chart = LightweightCharts.createChart(chartEl, {
+      layout: { background: { color:'#0f1722' }, textColor:'#c9d7ef' },
+      grid:   { vertLines:{color:'#13202f'}, horzLines:{color:'#13202f'} },
+      rightPriceScale: { borderColor:'#1f2a37' },
+      timeScale: { borderColor:'#1f2a37', timeVisible:true, secondsVisible:false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
+      handleScale: { mouseWheel: true, pinch: true },
+    });
+    const candleSeries = chart.addCandlestickSeries({
+      upColor:'#22c55e', downColor:'#ef4444', wickUpColor:'#22c55e', wickDownColor:'#ef4444', borderVisible:false
+    });
+    const sma20Series = chart.addLineSeries({ color:'#fcd535', lineWidth:2 });
+    const sma50Series = chart.addLineSeries({ color:'#9ab0c9', lineWidth:2 });
+
+    const markers = [];
+
+    // ----------------------- UI refs -----------------------
+    const ui = {
+      symbolInput: document.getElementById('symbolInput'),
+      usdtList: document.getElementById('usdtList'),
+      interval: document.getElementById('interval'),
+      load: document.getElementById('load'),
+      reset: document.getElementById('reset'),
+      closeIdea: document.getElementById('closeIdea'),
+      wsdot: document.getElementById('wsdot'),
+      hint: document.getElementById('hint'),
+      log: document.getElementById('log'),
+      lastSig: document.getElementById('lastSig'),
+      atrSL: document.getElementById('atrSL'),
+      atrTP: document.getElementById('atrTP'),
+      minConf: document.getElementById('minConf'),
+      minConfLbl: document.getElementById('minConfLbl'),
+      oneAtATime: document.getElementById('oneAtATime'),
+    };
+
+    // ----------------------- State -----------------------
+    let ws; let data=[]; // candles
+    let lastClosedStart=0;
+    const cfg = { smaFast:20, smaSlow:50, rsi:14, macd:[12,26,9], minAgree:3 };
+    let idea = null; // current open idea (TP/SL), or null
+
+    function status(text){ ui.hint.textContent=text; }
+    function logLine(html){ const row=document.createElement('div'); row.className='row'; row.innerHTML=html; ui.log.prepend(row); }
+
+    // ----------------------- Binance helpers -----------------------
+    async function loadUSDTList(){
+      try{
+        const res = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+        const info = await res.json();
+        const syms = info.symbols
+          .filter(s => s.status==='TRADING' && s.symbol.endsWith('USDT'))
+          .map(s => s.symbol)
+          .sort();
+        ui.usdtList.innerHTML = syms.map(s=>`<option value="${s}"></option>`).join('');
+        if (!ui.symbolInput.value) ui.symbolInput.value = 'BTCUSDT';
+      }catch(e){ console.warn('exchangeInfo failed', e); if(!ui.symbolInput.value) ui.symbolInput.value='BTCUSDT'; }
+    }
+
+    async function loadHistory(symbol, interval){
+      const limit = 600;
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('History fetch failed');
+      const raw = await res.json();
+      data = raw.map(k=>({
+        time: Math.floor(k[0]/1000),
+        open: +k[1], high:+k[2], low:+k[3], close:+k[4], volume:+k[5],
+        isClosed: true
+      }));
+      candleSeries.setData(data);
+      computeAndPaint();
+      chart.timeScale().fitContent();
+    }
+
+    function openWS(symbol, interval){
+      closeWS();
+      const stream = `${symbol.toLowerCase()}@kline_${interval}`;
+      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
+      ui.wsdot.className = 'dot idle';
+      ws.onopen = ()=>{ ui.wsdot.className='dot ok'; status(`Live ${symbol} ${interval}`); };
+      ws.onclose = ()=>{ ui.wsdot.className='dot bad'; status('Disconnected'); };
+      ws.onerror = ()=>{ ui.wsdot.className='dot bad'; };
+      ws.onmessage = (ev)=>{
+        const msg = JSON.parse(ev.data);
+        const k = msg.k;
+        const t = Math.floor(k.t/1000);
+        const candle = {
+          time:t, open:+k.o, high:+k.h, low:+k.l, close:+k.c, volume:+k.v,
+          isClosed: k.x
+        };
+        const last = data[data.length-1];
+        if(last && last.time === candle.time){ data[data.length-1] = candle; candleSeries.update(candle); }
+        else { data.push(candle); candleSeries.update(candle); }
+
+        // Check TP/SL intrabar using current kline highs/lows
+        if (idea && idea.status==='OPEN'){
+          checkTP_SL_Intrabox(candle);
+        }
+
+        // When a bar closes, recompute, trail SL, and check signal
+        if (k.x) {
+          computeAndPaint();
+          trailStopOnClose();
+          checkSignalOnClose();
+        }
+      };
+    }
+    function closeWS(){ if(ws){ try{ ws.close(); }catch(e){} ws=null; } }
+
+    // ----------------------- Indicators -----------------------
+    function computeIndicators(){
+      const closes = data.map(d=>d.close);
+      const highs  = data.map(d=>d.high);
+      const lows   = data.map(d=>d.low);
+      const smaFast = SMA(closes, cfg.smaFast);
+      const smaSlow = SMA(closes, cfg.smaSlow);
+      const rsi = RSI(closes, cfg.rsi);
+      const {macd, signal, hist} = MACD(closes, cfg.macd[0], cfg.macd[1], cfg.macd[2]);
+      const atr = ATR(highs, lows, closes, 14);
+      return { smaFast, smaSlow, rsi, macd, macdSig: signal, macdHist: hist, atr };
+    }
+
+    function computeAndPaint(){
+      const { smaFast, smaSlow } = computeIndicators();
+      const line20 = []; const line50 = [];
+      for (let i=0;i<data.length;i++){
+        const t = data[i].time;
+        if (smaFast[i]!==undefined) line20.push({ time:t, value: +smaFast[i].toFixed(6) });
+        if (smaSlow[i]!==undefined) line50.push({ time:t, value: +smaSlow[i].toFixed(6) });
+      }
+      sma20Series.setData(line20);
+      sma50Series.setData(line50);
+    }
+
+    // ----------------------- Signals -----------------------
+    function checkSignalOnClose(){
+      const n = data.length;
+      if (n<60) return;
+      const { smaFast, smaSlow, rsi, macd, macdSig, macdHist, atr } = computeIndicators();
+
+      const i = n-1; // closed bar index
+      const prev = i-1;
+
+      const c = data[i].close;
+      // Conditions
+      const smaBull = smaFast[i]!=null && smaSlow[i]!=null && smaFast[i]>smaSlow[i] && c > smaFast[i];
+      const smaBear = smaFast[i]!=null && smaSlow[i]!=null && smaFast[i]<smaSlow[i] && c < smaFast[i];
+
+      const smaCrossUp = smaFast[prev]!=null && smaSlow[prev]!=null && smaFast[prev] <= smaSlow[prev] && smaFast[i] > smaSlow[i];
+      const smaCrossDn = smaFast[prev]!=null && smaSlow[prev]!=null && smaFast[prev] >= smaSlow[prev] && smaFast[i] < smaSlow[i];
+
+      const macdUp = macd[i]!=null && macdSig[i]!=null && macd[i] > macdSig[i] && (macdHist[i]||0) > (macdHist[prev]||0);
+      const macdDn = macd[i]!=null && macdSig[i]!=null && macd[i] < macdSig[i] && (macdHist[i]||0) < (macdHist[prev]||0);
+
+      const rsiUp = rsi[i]!=null && rsi[prev]!=null && (rsi[i] > 50 && rsi[prev] <= 50 || (rsi[prev] < 35 && rsi[i] > rsi[prev]));
+      const rsiDn = rsi[i]!=null && rsi[prev]!=null && (rsi[i] < 50 && rsi[prev] >= 50 || (rsi[prev] > 65 && rsi[i] < rsi[prev]));
+
+      const longScore = (smaBull?1:0) + (smaCrossUp?1:0) + (macdUp?1:0) + (rsiUp?1:0);
+      const shortScore= (smaBear?1:0) + (smaCrossDn?1:0) + (macdDn?1:0) + (rsiDn?1:0);
+
+      const minAgree = Number(ui.minConf.value);
+      cfg.minAgree = minAgree;
+      ui.minConfLbl.textContent = `${minAgree} / 3`;
+
+      let action=null, score=0;
+      if (longScore>=minAgree) { action='LONG'; score=longScore; }
+      if (shortScore>longScore && shortScore>=minAgree){ action='SHORT'; score=shortScore; }
+
+      if (!action) return;
+      if (ui.oneAtATime.checked && idea && idea.status==='OPEN') return; // ignore while open
+
+      // One signal per bar
+      if (data[i].time === lastClosedStart) return;
+      lastClosedStart = data[i].time;
+
+      // Arrow marker
+      const marker = {
+        time: data[i].time,
+        position: action==='LONG' ? 'belowBar' : 'aboveBar',
+        color: action==='LONG' ? '#22c55e' : '#ef4444',
+        shape: action==='LONG' ? 'arrowUp' : 'arrowDown',
+        text: (action==='LONG'?'BUY':'SELL') + ` (${score}/3)`
+      };
+      markers.push(marker);
+      if (markers.length>300) markers.shift();
+      candleSeries.setMarkers(markers);
+
+      // Create TP/SL idea
+      const a = atr[i] || 0;
+      const entry = data[i].close;
+      const slMult = Number(ui.atrSL.value)||1.5;
+      const tpMult = Number(ui.atrTP.value)||2.0;
+      const sl = action==='LONG' ? entry - slMult * a : entry + slMult * a;
+      const tp = action==='LONG' ? entry + tpMult * a : entry - tpMult * a;
+
+      makeIdea(action, entry, sl, tp, data[i].time, slMult, tpMult);
+      const px = entry.toFixed(6);
+      ui.lastSig.innerHTML = `<span class="pill ${action==='LONG'?'good':'bad'}">${action}</span> at <b>${px}</b> • Conf <b>${score}/3</b> • ATR ${a?.toFixed(6)}`;
+      logLine(`<span class="pill ${action==='LONG'?'good':'bad'}">${action}</span><span>${new Date(data[i].time*1000).toLocaleString()}</span><span>px ${px}</span><span>${score}/3</span>`);
+    }
+
+    // ----------------------- Idea (TP/SL lines & trailing) -----------------------
+    function makeIdea(side, entry, sl, tp, time, slMult, tpMult){
+      clearIdea(); // allow only one active at a time for simplicity
+      const entryLine = candleSeries.createPriceLine({
+        price: entry, color:'#cbd5e1', lineWidth:1, lineStyle:LightweightCharts.LineStyle.Solid,
+        axisLabelVisible:true, title:'ENTRY'
+      });
+      const slLine = candleSeries.createPriceLine({
+        price: sl, color:'#ef4444', lineWidth:2, lineStyle:LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible:true, title:`SL ${slMult}×ATR`
+      });
+      const tpLine = candleSeries.createPriceLine({
+        price: tp, color:'#22c55e', lineWidth:2, lineStyle:LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible:true, title:`TP ${tpMult}×ATR`
+      });
+      idea = { status:'OPEN', side, entry, sl, tp, time, entryLine, slLine, tpLine, slMult, tpMult };
+    }
+
+    function clearIdea(){
+      if (!idea) return;
+      try{ candleSeries.removePriceLine(idea.entryLine); }catch(e){}
+      try{ candleSeries.removePriceLine(idea.slLine); }catch(e){}
+      try{ candleSeries.removePriceLine(idea.tpLine); }catch(e){}
+      idea = null;
+    }
+
+    function closeIdea(result, price, when){
+      if (!idea) return;
+      const pnl = idea.side==='LONG' ? (price - idea.entry) : (idea.entry - price);
+      logLine(`<span class="pill ${result==='TP'?'good':'bad'}">${result}</span><span>${new Date(when*1000).toLocaleString()}</span><span>px ${price.toFixed(6)}</span><span>Δ ${pnl.toFixed(6)}</span>`);
+      ui.lastSig.innerHTML = `${result} at <b>${price.toFixed(6)}</b> • Δ ${pnl.toFixed(6)}`;
+      clearIdea();
+    }
+
+    function checkTP_SL_Intrabox(candle){
+      if (!idea || idea.status!=='OPEN') return;
+      if (idea.side==='LONG'){
+        // Conservative: SL before TP if both within same bar
+        if (candle.low <= idea.sl) return closeIdea('SL', idea.sl, candle.time);
+        if (candle.high >= idea.tp) return closeIdea('TP', idea.tp, candle.time);
+      } else {
+        if (candle.high >= idea.sl) return closeIdea('SL', idea.sl, candle.time);
+        if (candle.low  <= idea.tp) return closeIdea('TP', idea.tp, candle.time);
+      }
+    }
+
+    function trailStopOnClose(){
+      if (!idea || idea.status!=='OPEN') return;
+      const n = data.length; if (n<2) return;
+      const { atr } = computeIndicators();
+      const i = n-1;
+      const a = atr[i] || 0;
+      const c = data[i].close;
+
+      if (idea.side==='LONG'){
+        const newSL = Math.max(idea.sl, c - idea.slMult * a);
+        if (newSL > idea.sl + 1e-12){
+          idea.sl = newSL;
+          try{ candleSeries.removePriceLine(idea.slLine); }catch(e){}
+          idea.slLine = candleSeries.createPriceLine({
+            price: idea.sl, color:'#ef4444', lineWidth:2, lineStyle:LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible:true, title:`SL ${idea.slMult}×ATR (trail)`
+          });
+        }
+      } else {
+        const newSL = Math.min(idea.sl, c + idea.slMult * a);
+        if (newSL < idea.sl - 1e-12){
+          idea.sl = newSL;
+          try{ candleSeries.removePriceLine(idea.slLine); }catch(e){}
+          idea.slLine = candleSeries.createPriceLine({
+            price: idea.sl, color:'#ef4444', lineWidth:2, lineStyle:LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible:true, title:`SL ${idea.slMult}×ATR (trail)`
+          });
+        }
+      }
+    }
+
+    // ----------------------- Controls -----------------------
+    async function reloadAll(){
+      const symbol = (ui.symbolInput.value||'BTCUSDT').toUpperCase().replace(/\s+/g,'');
+      ui.symbolInput.value = symbol;
+      status('Loading history…');
+      await loadHistory(symbol, ui.interval.value);
+      openWS(symbol, ui.interval.value);
+    }
+
+    ui.load.addEventListener('click', reloadAll);
+    ui.interval.addEventListener('change', reloadAll);
+    ui.reset.addEventListener('click', ()=>{
+      markers.length = 0; candleSeries.setMarkers([]);
+      ui.lastSig.textContent='—'; status('Cleared');
+      clearIdea();
+    });
+    ui.closeIdea.addEventListener('click', ()=>{ if(idea){ closeIdea('Manual', data[data.length-1].close, data[data.length-1].time); } });
+
+    window.addEventListener('resize', ()=> chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight }));
+
+    // ----------------------- Init -----------------------
+    (async function init(){
+      await loadUSDTList();
+      chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+      if (!ui.symbolInput.value) ui.symbolInput.value='BTCUSDT';
+      await reloadAll();
+    })();
+  </script>
+</body>
+</html>
+<!-- partial -->
+  
+</body>
+</html>
